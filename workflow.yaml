@@ -1,0 +1,78 @@
+# openniuma/workflow.yaml — openNiuMa 运行时配置（POI 项目）
+
+project:
+  name: "Location Scout"
+  main_branch: master
+  dev_branch_prefix: "dev/backlog-batch"
+  feat_branch_prefix: "feat"
+  gate_command: |
+    npm run lint && npm test && npm run build
+    npx tsc --noEmit -p frontend
+  spec_dir: "docs/superpowers/specs"
+  plan_dir: "docs/superpowers/plans"
+
+hooks:
+  after_create: |
+    if diff -q "$MAIN_REPO/package-lock.json" "package-lock.json" >/dev/null 2>&1; then
+      python3 "$MAIN_REPO/openniuma/lib/compat.py" copy-tree "$MAIN_REPO/node_modules" node_modules || npm install --prefer-offline
+      for ws in frontend backend; do
+        [ -d "$MAIN_REPO/$ws/node_modules" ] && \
+          python3 "$MAIN_REPO/openniuma/lib/compat.py" copy-tree "$MAIN_REPO/$ws/node_modules" "$ws/node_modules" || true
+      done
+    else
+      npm install --prefer-offline
+    fi
+    DB_NAME="poi_dev_loop_${SLUG//-/_}"
+    createdb "$DB_NAME" 2>/dev/null || true
+    if [ -f backend/.env.example ]; then
+      cp backend/.env.example backend/.env
+      python3 "$MAIN_REPO/openniuma/lib/compat.py" sed-inplace backend/.env "poi_dev" "$DB_NAME"
+    fi
+  before_remove: |
+    DB_NAME="poi_dev_loop_${SLUG//-/_}"
+    dropdb --if-exists "$DB_NAME" 2>/dev/null || true
+  timeout_sec: 120
+
+polling:
+  inbox_interval_sec: 60
+workers:
+  max_concurrent: 5
+  stall_timeout_sec: 1800
+  max_consecutive_failures: 3
+retry:
+  base_delay_sec: 10
+  max_backoff_sec: 300
+  rate_limit_default_wait_sec: 600
+failure:
+  max_retries_gate: 3
+  max_retries_network: 2
+  max_retries_context: 1
+  max_retries_conflict: 2
+  max_retries_permission: 1
+  skip_on_unknown: true
+worktree:
+  base_dir: .trees
+  prefix: loop
+prompts:
+  dir: openniuma/prompts
+  common_rules: openniuma/prompts/_common-rules.md
+notify:
+  level: info
+  macos: true
+  bell: true
+  feishu_webhook: ""
+  suppress_window_sec: 300
+  quiet_hours: ""
+  aggregate_interval_sec: 300
+  feishu_rate_limit_per_min: 10
+models:
+  default: opus
+  phases:
+    VERIFY: sonnet
+    MERGE: sonnet
+    MERGE_FIX: sonnet
+    CI_FIX: sonnet
+    FIX: sonnet
+pause:
+  auto_resume_sec: 3600
+  partial: true

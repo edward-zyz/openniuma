@@ -1,0 +1,24 @@
+# Python 运行时
+__pycache__/
+*.py[cod]
+*.pyc
+.pytest_cache/
+
+# 状态文件（各机器独立）
+state.json
+state.json.lock
+stats.json
+stats.json.lock
+stats-archive-*.json
+
+# 运行时生成
+.cache/
+.env
+logs/
+inbox/
+tasks/
+backlog.md
+drafts/
+reviews/
+workers/
+dev-loop-observations.md

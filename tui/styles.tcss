@@ -1,0 +1,45 @@
+/* openNiuMa Dashboard TUI 样式 */
+
+#main {
+    layout: horizontal;
+    height: 1fr;
+}
+
+#task-list {
+    width: 30;
+    min-width: 25;
+    border: solid $primary;
+    padding: 0 1;
+}
+
+#right-panel {
+    width: 1fr;
+}
+
+#task-detail {
+    height: 1fr;
+    min-height: 8;
+    border: solid $secondary;
+    padding: 1 2;
+    overflow-y: auto;
+}
+
+#log-viewer {
+    height: 1fr;
+    border: solid $accent;
+    padding: 0 1;
+}
+
+/* 隐藏日志时详情占满 */
+#task-detail.full {
+    height: 1fr;
+}
+
+TaskListItem {
+    height: 1;
+    padding: 0 1;
+}
+
+TaskListItem:hover {
+    background: $primary 20%;
+}
