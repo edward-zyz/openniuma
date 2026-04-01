@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: MIT
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openniuma"
+dynamic = ["version"]
+description = "AI-driven autonomous development orchestrator for Claude Code"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "edward-zyz"},
+]
+keywords = ["ai", "claude", "orchestrator", "development", "automation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = [
+    "pyyaml>=6.0",
+    "click>=8.0",
+]
+
+[project.optional-dependencies]
+tui = ["textual>=0.50", "watchfiles>=0.20"]
+feishu = ["requests>=2.28"]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.4",
+    "mypy>=1.8",
+    "pip-audit>=2.7",
+]
+
+[project.scripts]
+openniuma = "openniuma.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/edward-zyz/openniuma"
+Repository = "https://github.com/edward-zyz/openniuma"
+Issues = "https://github.com/edward-zyz/openniuma/issues"
+Changelog = "https://github.com/edward-zyz/openniuma/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/openniuma/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/openniuma"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
