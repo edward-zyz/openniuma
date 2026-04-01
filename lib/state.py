@@ -28,6 +28,22 @@ _DEFAULT_STATE: dict = {
     "current_phase": None,
 }
 
+_TERMINAL_TASK_STATUSES = {"done", "done_in_dev", "released", "dropped"}
+_TERMINAL_WORKER_PHASES = {"AWAITING_HUMAN_REVIEW", "FINALIZE"}
+
+
+def is_worker_state_done(worker_state: dict, task_id: int) -> bool:
+    """判断 worker state 是否已将指定任务推进到完成态。"""
+    for task in worker_state.get("queue", []):
+        if task.get("id") == task_id:
+            return task.get("status") in _TERMINAL_TASK_STATUSES
+
+    completed_ids = {item.get("id") for item in worker_state.get("completed", [])}
+    if task_id in completed_ids:
+        return True
+
+    return worker_state.get("current_phase") in _TERMINAL_WORKER_PHASES
+
 
 class LoopState:
     """基于 JsonFileStore 的任务状态管理器。"""
