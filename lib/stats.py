@@ -93,11 +93,11 @@ class StatsStore:
 
     # ── 查询 ──────────────────────────────────────────────
 
-    def summary(self, task_id: str | None = None) -> dict:
+    def summary(self, task_id: str | None = None, state_path: str | None = None) -> dict:
         """返回统计摘要。
 
         如果指定 task_id，只统计该 task 的 sessions；
-        否则统计全部。
+        否则统计全部。state_path 用于获取当前并行任务数。
         """
         data = self.get_all()
         sessions = data.get("sessions", [])
@@ -108,12 +108,35 @@ class StatsStore:
             tasks = [t for t in tasks if t.get("task_id") == task_id]
 
         total_duration = sum(s.get("duration_sec", 0) for s in sessions)
-        distinct_tasks = len({s.get("task_id") for s in sessions if s.get("task_id") is not None})
+        succeeded = sum(1 for s in sessions if s.get("exit_code") == 0)
+        failed = sum(1 for s in sessions if s.get("exit_code", 0) != 0)
+        unique_tasks = len({s.get("task_id") for s in sessions})
+        avg_duration = total_duration / len(sessions) if sessions else 0
+
+        # 当前并行数：从 state.json 读取 in_progress 任务数
+        active_tasks = self._count_active_tasks(state_path) if state_path else 0
+
         return {
             "total_sessions": len(sessions),
             "total_duration_sec": total_duration,
-            "total_tasks": distinct_tasks or len(tasks),
+            "total_tasks": len(tasks),
+            "unique_tasks": unique_tasks,
+            "succeeded": succeeded,
+            "failed": failed,
+            "avg_duration_sec": round(avg_duration, 1),
+            "active_tasks": active_tasks,
         }
+
+    @staticmethod
+    def _count_active_tasks(state_path: str) -> int:
+        """从 state.json 读取当前 in_progress 任务数。"""
+        try:
+            state_store = JsonFileStore(state_path)
+            state_data = state_store.read()
+            queue = state_data.get("queue", [])
+            return sum(1 for t in queue if t.get("status") == "in_progress")
+        except Exception:
+            return 0
 
     def get_all(self) -> dict:
         """返回完整数据。"""
@@ -189,11 +212,15 @@ def main() -> None:
 
     elif cmd == "summary":
         task_id = None
+        state_path = None
         fmt = "text"
         i = 3
         while i < len(sys.argv):
             if sys.argv[i] == "--task" and i + 1 < len(sys.argv):
                 task_id = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "--state" and i + 1 < len(sys.argv):
+                state_path = sys.argv[i + 1]
                 i += 2
             elif sys.argv[i] == "--format" and i + 1 < len(sys.argv):
                 fmt = sys.argv[i + 1]
@@ -202,7 +229,7 @@ def main() -> None:
                 i += 1
 
         store = StatsStore(stats_path)
-        result = store.summary(task_id=task_id)
+        result = store.summary(task_id=task_id, state_path=state_path)
 
         if fmt == "json":
             print(json.dumps(result, ensure_ascii=False, indent=2))

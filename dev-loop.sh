@@ -4,16 +4,6 @@ set -euo pipefail
 # ── 确保 PATH 包含 Homebrew（macOS 子进程可能缺少） ──
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
 
-if command -v python3.13 >/dev/null 2>&1; then
-  PYTHON_BIN="python3.13"
-else
-  PYTHON_BIN="python3"
-fi
-
-python3() {
-  command "$PYTHON_BIN" "$@"
-}
-
 # ── 参数解析 ──
 VERBOSE=false
 MAX_WORKERS=5
@@ -44,7 +34,7 @@ done
 NIUMA_DIR="$(cd "$(dirname "$0")" && pwd)"          # openniuma 代码目录绝对路径
 MAIN_REPO_DIR="$(dirname "$NIUMA_DIR")"             # 主仓库绝对路径
 RUNTIME_DIR="${MAIN_REPO_DIR}/.openniuma-runtime"    # 运行时数据目录
-STATE_FILE="${RUNTIME_DIR}/state.json"
+STATE_FILE="${RUNTIME_DIR}/state.json"                 # 全部自包含在 openniuma/ 下
 INBOX_DIR="${RUNTIME_DIR}/inbox"
 TASKS_DIR="${RUNTIME_DIR}/tasks"
 BACKLOG_FILE="${RUNTIME_DIR}/backlog.md"
@@ -55,7 +45,6 @@ WORKTREE_BASE_DIR="${MAIN_REPO_DIR}/.trees"         # worktree 父目录
 INBOX_POLL_INTERVAL=60
 MAX_CONSECUTIVE_FAILURES=3
 WORKERS_DIR="${RUNTIME_DIR}/workers"
-MAIN_REPO_ORIGINAL_BRANCH=$(git -C "$MAIN_REPO_DIR" branch --show-current 2>/dev/null || echo "")
 
 # ── 辅助函数 ──
 timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
@@ -74,20 +63,6 @@ read_phase() {
 
 read_field() {
   python3 "$NIUMA_DIR/lib/state.py" get-field "$STATE_FILE" "$1"
-}
-
-worker_task_done() {
-  [ -z "${SINGLE_TASK:-}" ] && return 1
-  python3 -c "
-import json, sys
-sys.path.insert(0, '$NIUMA_DIR')
-from lib.state import is_worker_state_done
-
-with open('$STATE_FILE') as f:
-    state = json.load(f)
-
-sys.exit(0 if is_worker_state_done(state, int('$SINGLE_TASK')) else 1)
-" >/dev/null 2>&1
 }
 
 # 获取当前任务的 slug（用于 worktree 目录名）
@@ -115,7 +90,7 @@ if item_id:
 # 判断 phase 是否需要 worktree
 needs_worktree() {
   case "$1" in
-    FAST_TRACK|DESIGN_IMPLEMENT|DESIGN|IMPLEMENT|VERIFY|FIX|MERGE|MERGE_FIX|FINALIZE|RELEASE_PREP|RELEASE|CI_FIX) return 0 ;;
+    FAST_TRACK|DESIGN_IMPLEMENT|DESIGN|IMPLEMENT|VERIFY|FIX|MERGE|MERGE_FIX|FINALIZE) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -229,18 +204,13 @@ ensure_worktree() {
     git -C "$MAIN_REPO_DIR" branch "$dev_branch" "origin/$dev_branch" >/dev/null 2>&1 || true
   fi
 
-  # 创建 worktree：用 detached HEAD 基于 dev 分支（避免多 worktree 检出同一分支的冲突）
-  # 并发创建 worktree 时可能因 git lock 竞争失败，最多重试 3 次
+  # 创建 worktree（并发重试 3 次，防止 git lock 竞争）
   local wt_created=false
   for attempt in 1 2 3; do
     if git -C "$MAIN_REPO_DIR" worktree add --detach "$wt_path" "$dev_branch" >/dev/null 2>&1; then
-      wt_created=true
-      break
+      wt_created=true; break
     fi
-    if [ -d "$wt_path/.git" ] || [ -f "$wt_path/.git" ]; then
-      wt_created=true
-      break
-    fi
+    [ -d "$wt_path/.git" ] || [ -f "$wt_path/.git" ] && { wt_created=true; break; }
     log "⚠️ git worktree add 失败，第 ${attempt}/3 次重试..." >&3
     sleep "$((attempt * 2))"
   done
@@ -290,19 +260,18 @@ cleanup_worktree() {
 
 # 启动时清理残留的 loop worktree（上次异常退出后的残留）
 cleanup_stale_worktrees() {
-  # 收集有活跃进程的 worker 正在使用的 worktree slug（避免误删正在运行的 worker 的目录）
-  # 只有 pid 文件存在且进程存活的 worker 才视为活跃，已完成/已死的 worker 不保护其 worktree
+  # 只收集有活跃进程的 worker 的 worktree slug（已死/已完成的 worker 不保护）
   local active_slugs=""
   for wstate in "${WORKERS_DIR}"/*/state.json; do
     [ -f "$wstate" ] || continue
-    local wdir
-    wdir="$(dirname "$wstate")"
+    local wdir; wdir="$(dirname "$wstate")"
     local pidfile="${wdir}/pid"
-    if [ ! -f "$pidfile" ]; then continue; fi
-    local wpid
-    wpid=$(cat "$pidfile" 2>/dev/null)
-    if ! kill -0 "$wpid" 2>/dev/null; then continue; fi
+    [ -f "$pidfile" ] || continue
+    local wpid; wpid=$(cat "$pidfile" 2>/dev/null)
+    kill -0 "$wpid" 2>/dev/null || continue
     local slug
+    # Bug fix: 使用 current_item_id + desc_path 提取 slug，与 read_slug() 逻辑一致
+    # 原来用 queue[0].name 会取到已完成任务的名称，导致当前活跃 worktree 不在保护名单里被误删
     slug=$(python3 -c "
 import json, re, sys
 try:
@@ -382,17 +351,85 @@ kill_worker() {
 refresh_backlog() {
   [ -f "$STATE_FILE" ] || return
   python3 <<PYEOF
-import json
-from openniuma.lib.backlog import render_backlog
+import json, re, os
+from pathlib import Path
 
 state_file = "${STATE_FILE}"
 backlog_file = "${BACKLOG_FILE}"
 
-with open(state_file, encoding="utf-8") as f:
+def read_body(filepath):
+    with open(filepath) as f:
+        content = f.read()
+    match = re.match(r"^---\s*\n.*?\n---\s*\n", content, re.DOTALL)
+    if match:
+        return content[match.end():].strip()
+    return content.strip()
+
+with open(state_file) as f:
     state = json.load(f)
 
-with open(backlog_file, "w", encoding="utf-8") as f:
-    f.write(render_backlog(state))
+sections = {"done": [], "in-progress": [], "pending": [], "blocked": []}
+for item in state.get("queue", []):
+    status = item.get("status", "pending")
+    if status == "done":
+        sections["done"].append(item)
+    elif status == "in-progress":
+        sections["in-progress"].append(item)
+    elif status == "blocked":
+        sections["blocked"].append(item)
+    else:
+        sections["pending"].append(item)
+
+lines = [
+    "# Product Backlog",
+    "",
+    "> 自动生成，请勿手工编辑。任务通过 inbox/ 目录添加。",
+    "",
+]
+
+section_titles = [
+    ("in-progress", "进行中"),
+    ("pending", "待开发"),
+    ("done", "已完成"),
+    ("blocked", "已阻塞"),
+]
+
+for key, title in section_titles:
+    items = sections[key]
+    lines.append(f"## {title}")
+    lines.append("")
+    if not items:
+        lines.append("（无）")
+        lines.append("")
+        continue
+    for item in items:
+        complexity = item.get("complexity", "中")
+        desc_path = item.get("desc_path")
+        lines.append(f"### #{item['id']} {item['name']} [{complexity}]")
+        meta_parts = []
+        created = item.get("created_at")
+        completed = item.get("completed_at")
+        spec = item.get("spec_path")
+        if created:
+            short_created = created[5:] if len(created) > 5 else created
+            time_str = f"📅 {short_created}"
+            if completed:
+                short_completed = completed[5:] if len(completed) > 5 else completed
+                time_str += f" → {short_completed}"
+            meta_parts.append(time_str)
+        if spec:
+            meta_parts.append(f"📄 [spec]({spec})")
+        if meta_parts:
+            lines.append(f"> {' | '.join(meta_parts)}")
+        if desc_path and os.path.exists(desc_path):
+            body = read_body(desc_path)
+            if body:
+                for bline in body.split("\n"):
+                    lines.append(bline)
+        lines.append("")
+
+with open(backlog_file, "w") as f:
+    f.write("\n".join(lines))
 PYEOF
 }
 
@@ -555,30 +592,22 @@ build_prompt() {
     FIX)              prompt_file="fix.md" ;;
     MERGE)            prompt_file="merge.md" ;;
     MERGE_FIX)        prompt_file="merge-fix.md" ;;
-    FINALIZE|RELEASE_PREP) prompt_file="release-prep.md" ;;
-    RELEASE)          prompt_file="release.md" ;;
+    FINALIZE)         prompt_file="finalize.md" ;;
     CI_FIX)           prompt_file="ci-fix.md" ;;
     INIT)
       # INIT 保持内联（无对应模板文件）
-      local init_main_branch
-      init_main_branch=$(python3 "$NIUMA_DIR/lib/config.py" get-value project.main_branch "$NIUMA_DIR/workflow.yaml" 2>/dev/null || echo "master")
       cat <<PROMPT
-# INIT：初始化下一条 batch 集成分支
+# INIT：初始化 dev 集成分支
 
 ⚠️ 你在主仓库目录执行。**禁止 git checkout / git merge**，只允许 fetch/branch/push。
-使用以下命令从 ${init_main_branch} 创建新的 batch 分支（不影响当前工作目录）：
+使用以下命令创建 dev 分支（不影响当前工作目录）：
 \`\`\`bash
-git fetch origin ${init_main_branch}
-git branch dev/backlog-batch-{date} origin/${init_main_branch}  # 如已存在则跳过
+git fetch origin master
+git branch dev/backlog-batch-{date} origin/master  # 如已存在则跳过
 git push -u origin dev/backlog-batch-{date}
 \`\`\`
-更新 state.json:
-- dev_branch = 新分支名（兼容旧字段）
-- batch_branch = 新分支名
-- batch_status = "active"
-- release_pr_number = null
-- release_started_at = null
-- current_phase = 第一个 pending 任务对应的路径（FAST_TRACK / DESIGN_IMPLEMENT / DESIGN）
+更新 state.json: dev_branch 字段。
+然后将 current_phase 更新为第一个 pending 任务对应的路径（FAST_TRACK / DESIGN_IMPLEMENT / DESIGN）。
 全程自主工作，不要问我问题。
 PROMPT
       return
@@ -668,19 +697,15 @@ for f in task_files:
     if is_done:
         completed.append({"id": item_id, "name": name})
 
-# 确定 batch_branch：使用当天日期
+# 确定 dev_branch：使用当天日期
 today = datetime.now().strftime("%Y-%m-%d")
-batch_branch = f"dev/backlog-batch-{today}"
+dev_branch = f"dev/backlog-batch-{today}"
 
 # 找第一个 pending 任务作为 current_item_id
 first_pending = next((q for q in queue if q["status"] == "pending"), None)
 
 state = {
-    "dev_branch": batch_branch,
-    "batch_branch": batch_branch,
-    "batch_status": "active",
-    "release_pr_number": None,
-    "release_started_at": None,
+    "dev_branch": dev_branch,
     "current_item_id": first_pending["id"] if first_pending else None,
     "current_phase": "DESIGN_IMPLEMENT" if first_pending else "AWAITING_HUMAN_REVIEW",
     "pr_number": None,
@@ -777,10 +802,6 @@ if not task_info:
     raise SystemExit('task not found')
 worker = {
     'dev_branch': state.get('dev_branch', ''),
-    'batch_branch': state.get('batch_branch', state.get('dev_branch', '')),
-    'batch_status': state.get('batch_status', 'active'),
-    'release_pr_number': state.get('release_pr_number'),
-    'release_started_at': state.get('release_started_at'),
     'current_item_id': $task_id,
     'current_phase': 'DESIGN_IMPLEMENT',
     'pr_number': None,
@@ -902,7 +923,7 @@ if spec_path:
     summary_lines.append(f"- **设计文档**: [{os.path.basename(spec_path)}]({spec_path})")
 
 if branch:
-    summary_lines.append(f"- **功能分支**: {branch}")
+    summary_lines.append(f"- **功能分支**: `{branch}`")
     # 从 git log 获取 commit 摘要（尝试在 worktree 或主仓库中查找）
     try:
         dev_branch = task_info.get('dev_branch', '')
@@ -954,7 +975,6 @@ import json, os, sys
 sys.path.insert(0, '$NIUMA_DIR')
 from lib.json_store import JsonFileStore
 from datetime import datetime, timezone
-from lib.state import is_worker_state_done
 
 state_file = '$STATE_FILE'
 worker_state_path = '${worker_state}'
@@ -973,15 +993,14 @@ def _sync(state):
     ws_phase = ws.get('current_phase', '')
     ws_queue = ws.get('queue', [])
     ws_task = ws_queue[0] if ws_queue else {}
-    task_status = ws_task.get('status')
-    is_done = is_worker_state_done(ws, task_id)
+    is_done = ws_task.get('status') == 'done' or ws_phase in ('AWAITING_HUMAN_REVIEW', 'FINALIZE')
 
     for q in state.get('queue', []):
         if q['id'] == task_id:
-            # AWAITING_HUMAN_REVIEW 表示任务已进入稳定态，即使 worker 被 kill（exit!=0）也标记完成
+            # Bug fix: AWAITING_HUMAN_REVIEW 表示任务已完成，即使 worker 被 kill（exit!=0）也标记 done
             # 否则被杀的已完成任务会被重置为 pending → 重新 spawn → 无限循环
             if is_done:
-                q['status'] = task_status if task_status in ('done_in_dev', 'released', 'dropped') else 'done_in_dev'
+                q['status'] = 'done'
                 q['completed_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
                 q['spec_path'] = ws.get('spec_path') or ws_task.get('spec_path')
                 completed_ids = {c['id'] for c in state.get('completed', [])}
@@ -1160,21 +1179,15 @@ store.update(_reset_orphans)
     # 清理已完成任务的残留 worker 目录
     for wdir in "${WORKERS_DIR}"/*/; do
       [ -d "$wdir" ] || continue
-      local wtid
-      wtid=$(basename "$wdir")
+      local wtid; wtid=$(basename "$wdir")
       [ -f "${wdir}pid" ] && kill -0 "$(cat "${wdir}pid" 2>/dev/null)" 2>/dev/null && continue
-      local task_status
-      task_status=$(python3 -c "
+      local task_status; task_status=$(python3 -c "
 import json
 for q in json.load(open('$STATE_FILE')).get('queue', []):
-    if q['id'] == $wtid:
-        print(q.get('status', ''))
-        break
+    if q['id'] == $wtid: print(q.get('status', '')); break
 " 2>/dev/null)
-      if [ "$task_status" = "done" ] || [ "$task_status" = "done_in_dev" ] || [ "$task_status" = "released" ] || [ "$task_status" = "cancelled" ] || [ "$task_status" = "dropped" ]; then
-        rm -rf "$wdir"
-        log "🧹 清理已完成任务 #${wtid} 的 worker 目录"
-      fi
+      case "$task_status" in done|done_in_dev|released|cancelled|dropped)
+        rm -rf "$wdir"; log "🧹 清理已完成任务 #${wtid} 的 worker 目录" ;; esac
     done
 
     # 统计当前活跃 worker 数
@@ -1286,13 +1299,13 @@ fi
 # 信号处理：Ctrl+C / kill 时终止当前 claude 子进程
 cleanup_on_exit() {
   log "🛑 收到终止信号，退出"
-  # Branch guard: restore the main repo branch captured at process start.
-  local _exit_original_branch _exit_current_branch
-  _exit_original_branch="${MAIN_REPO_ORIGINAL_BRANCH:-}"
+  # 分支守卫：退出前检查主仓库分支是否被污染
+  local _exit_dev_branch _exit_current_branch
+  _exit_dev_branch=$(python3 "$NIUMA_DIR/lib/state.py" get-field "$STATE_FILE" dev_branch 2>/dev/null || echo "")
   _exit_current_branch=$(git -C "$MAIN_REPO_DIR" branch --show-current 2>/dev/null || echo "")
-  if [ -n "$_exit_original_branch" ] && [ -n "$_exit_current_branch" ] && [ "$_exit_current_branch" != "$_exit_original_branch" ]; then
-    log "⚠️ [branch-guard] restoring main repo branch: ${_exit_current_branch} -> ${_exit_original_branch}"
-    git -C "$MAIN_REPO_DIR" checkout "$_exit_original_branch" >/dev/null 2>&1 || log "❌ [branch-guard] failed to restore main repo branch"
+  if [ -n "$_exit_dev_branch" ] && [ -n "$_exit_current_branch" ] && [ "$_exit_current_branch" != "$_exit_dev_branch" ]; then
+    log "⚠️ [分支守卫] 主仓库分支被污染（$_exit_current_branch → $_exit_dev_branch），自动重置"
+    git -C "$MAIN_REPO_DIR" checkout "$_exit_dev_branch" 2>/dev/null || log "❌ [分支守卫] 重置失败，请人工介入"
   fi
   kill 0 2>/dev/null
   exit 0
@@ -1308,7 +1321,7 @@ current_wt_slug=""   # 当前 worktree 对应的 slug
 log "🚀 自治研发循环启动（worktree 隔离模式）"
 log "主仓库: $MAIN_REPO_DIR"
 
-# 启动时清理残留 worktree（仅 orchestrator/串行模式，单任务 worker 不执行清理，避免误删其他 worker 的 worktree）
+# 启动时清理残留 worktree（仅 orchestrator，单任务 worker 不清理避免误删其他 worker 的 worktree）
 if [ -z "$SINGLE_TASK" ]; then
   cleanup_stale_worktrees
 fi
@@ -1329,23 +1342,15 @@ while true; do
   phase=$(read_phase)
   log "当前 Phase: $phase"
 
-  # 守卫：single-task worker 不应进入 INIT phase（INIT 是 orchestrator 级操作）
-  # 如果 Claude 误写了 INIT，重置为 DESIGN_IMPLEMENT 防止 worker 执行全局初始化
+  # 守卫：single-task worker 不应进入 INIT phase
   if [ -n "$SINGLE_TASK" ] && [ "$phase" = "INIT" ]; then
     log "⚠️ Worker 不应进入 INIT phase，重置为 DESIGN_IMPLEMENT"
     python3 -c "
-import sys
-sys.path.insert(0, '$NIUMA_DIR')
+import sys; sys.path.insert(0, '$NIUMA_DIR')
 from lib.json_store import JsonFileStore
-store = JsonFileStore('$STATE_FILE')
-store.update(lambda s: dict(s, current_phase='DESIGN_IMPLEMENT'))
+JsonFileStore('$STATE_FILE').update(lambda s: dict(s, current_phase='DESIGN_IMPLEMENT'))
 "
     phase="DESIGN_IMPLEMENT"
-  fi
-
-  if [ -n "$SINGLE_TASK" ] && worker_task_done; then
-    log "Worker #${SINGLE_TASK} 已在 state 中完成，退出"
-    break
   fi
 
   # Bug#1 fix: 每轮循环开始时重置 worktree 路径，避免 VERIFY 检查误用上一轮的旧路径
@@ -1360,7 +1365,6 @@ store.update(lambda s: dict(s, current_phase='DESIGN_IMPLEMENT'))
 
   # 等待新任务或人工审核
   if [ "$phase" = "AWAITING_HUMAN_REVIEW" ]; then
-    batch_status=$(read_field batch_status 2>/dev/null || echo "active")
     # process_inbox() 已在循环顶部执行，检查 queue 中是否有 pending 任务
     pending_count=$(python3 -c "
 import json
@@ -1369,18 +1373,6 @@ with open('$STATE_FILE') as f:
 print(sum(1 for q in state.get('queue', []) if q.get('status') == 'pending'))
 " 2>/dev/null || echo "0")
     if [ "$pending_count" -gt 0 ]; then
-      if [ "$batch_status" != "active" ]; then
-        log "📦 当前 batch 已冻结，切换到 INIT 创建下一批集成分支..."
-        python3 -c "
-import sys
-sys.path.insert(0, '$NIUMA_DIR')
-from lib.json_store import JsonFileStore
-
-store = JsonFileStore('$STATE_FILE')
-store.update(lambda s: dict(s, current_phase='INIT'))
-"
-        continue
-      fi
       log "📥 发现 ${pending_count} 个待处理任务，启动新任务..."
       # 找到第一个 pending 任务，默认进入 DESIGN_IMPLEMENT（由 Claude 自主判定复杂度）
       python3 -c "
@@ -1403,28 +1395,6 @@ def _pick_next(state):
     return state
 
 store.update(_pick_next)
-"
-      continue
-    fi
-    releasable_count=$(python3 -c "
-import json
-with open('$STATE_FILE') as f:
-    state = json.load(f)
-print(sum(1 for q in state.get('queue', []) if q.get('status') == 'done_in_dev'))
-" 2>/dev/null || echo "0")
-    if [ "$releasable_count" -gt 0 ] && [ "$batch_status" = "active" ]; then
-      log "📦 当前 batch 有 ${releasable_count} 个已进 Dev 任务，进入批次冻结..."
-      python3 -c "
-import sys
-sys.path.insert(0, '$NIUMA_DIR')
-from lib.json_store import JsonFileStore
-
-store = JsonFileStore('$STATE_FILE')
-def _freeze(state):
-    state['batch_status'] = 'frozen'
-    state['current_phase'] = 'RELEASE_PREP'
-    return state
-store.update(_freeze)
 "
       continue
     fi
@@ -1498,13 +1468,13 @@ ${prompt}"
   current_wt_slug=""
   if needs_worktree "$phase"; then
     current_wt_slug=$(read_slug)
-    # 批次发布阶段：即使 current_item_id 为空，也必须在 worktree 中运行
-    if [ -z "$current_wt_slug" ] && [[ "$phase" =~ ^(FINALIZE|RELEASE_PREP|RELEASE|CI_FIX)$ ]]; then
-      current_wt_slug="release-$(date +%Y%m%d)"
-      log "⚠️ ${phase}: current_item_id 为空，使用批次 worktree slug: $current_wt_slug"
+    # FINALIZE 特殊处理：即使 current_item_id 为空，也必须在 worktree 中运行（防止 git checkout 污染主仓库）
+    if [ -z "$current_wt_slug" ] && [ "$phase" = "FINALIZE" ]; then
+      current_wt_slug="finalize-$(date +%Y%m%d)"
+      log "⚠️ FINALIZE: current_item_id 为空，使用临时 worktree slug: $current_wt_slug"
     fi
     if [ -n "$current_wt_slug" ]; then
-      local_dev_branch=$(read_field batch_branch 2>/dev/null || read_field dev_branch)
+      local_dev_branch=$(read_field dev_branch)
       current_wt_path=$(ensure_worktree "$current_wt_slug" "$local_dev_branch")
       if [ $? -ne 0 ] || [ -z "$current_wt_path" ]; then
         log "❌ Worktree 创建失败，停止循环"
@@ -1600,12 +1570,12 @@ store.update(_inc)
   claude_exit=$?
   set -e
 
-  # Branch guard: restore the user's main repo branch if a session polluted it.
-  _guard_original_branch="${MAIN_REPO_ORIGINAL_BRANCH:-}"
+  # 🔒 分支守卫：session 结束后立即检查并重置主仓库分支，防止 FINALIZE/CI_FIX 污染
+  _guard_dev_branch=$(read_field dev_branch 2>/dev/null || echo "")
   _guard_main_branch=$(git -C "$MAIN_REPO_DIR" branch --show-current 2>/dev/null || echo "")
-  if [ -n "$_guard_original_branch" ] && [ -n "$_guard_main_branch" ] && [ "$_guard_main_branch" != "$_guard_original_branch" ]; then
-    log "⚠️ [branch-guard] restoring main repo branch: ${_guard_main_branch} -> ${_guard_original_branch}"
-    git -C "$MAIN_REPO_DIR" checkout "$_guard_original_branch" >/dev/null 2>&1 || log "❌ [branch-guard] failed to restore main repo branch"
+  if [ -n "$_guard_dev_branch" ] && [ -n "$_guard_main_branch" ] && [ "$_guard_main_branch" != "$_guard_dev_branch" ]; then
+    log "⚠️ [分支守卫] 主仓库分支被污染（$_guard_main_branch → $_guard_dev_branch），自动重置"
+    git -C "$MAIN_REPO_DIR" checkout "$_guard_dev_branch" 2>/dev/null || log "❌ [分支守卫] 重置失败，请人工介入"
   fi
 
   # 记录会话耗时
@@ -1722,7 +1692,7 @@ else:
   new_phase=$(read_phase)
 
   # Bug fix: FINALIZE/MERGE 后 phase 不得回退到 DESIGN_IMPLEMENT（Claude 误写防护）
-  if [ "$phase" = "FINALIZE" ] || [ "$phase" = "MERGE" ] || [ "$phase" = "RELEASE_PREP" ] || [ "$phase" = "RELEASE" ]; then
+  if [ "$phase" = "FINALIZE" ] || [ "$phase" = "MERGE" ]; then
     if [ "$new_phase" = "DESIGN_IMPLEMENT" ]; then
       log "⚠️ [Phase 防护] ${phase} 后出现 DESIGN_IMPLEMENT 回退，强制修正为 AWAITING_HUMAN_REVIEW"
       python3 -c "

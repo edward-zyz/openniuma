@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
 NIUMA_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$NIUMA_DIR")"
 RUNTIME_DIR="${REPO_DIR}/.openniuma-runtime"
@@ -20,9 +19,7 @@ echo "🚀 初始化 openNiuMa..."
 python3 "$NIUMA_DIR/lib/compat.py" check-python
 
 # 1. 创建目录
-# 代码目录
 mkdir -p openniuma/prompts openniuma/.cache
-# 运行时目录
 mkdir -p "$RUNTIME_DIR"/{inbox,tasks,logs,reviews,workers,drafts}
 
 # 2. 探测

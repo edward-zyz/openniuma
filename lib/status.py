@@ -19,9 +19,6 @@ _STATUS_ICONS = {
     "pending": "○",
     "in_progress": "●",
     "done": "✓",
-    "done_in_dev": "↺",
-    "released": "★",
-    "dropped": "↧",
     "blocked": "⊘",
     "cancelled": "✗",
 }
@@ -30,9 +27,6 @@ _STATUS_LABELS = {
     "pending": "Pending",
     "in_progress": "Running",
     "done": "Done",
-    "done_in_dev": "In Dev",
-    "released": "Released",
-    "dropped": "Dropped",
     "blocked": "Blocked",
     "cancelled": "Cancelled",
 }
@@ -41,9 +35,6 @@ _ANSI_COLORS = {
     "pending": "\033[33m",      # 黄色
     "in_progress": "\033[36m",  # 青色
     "done": "\033[32m",         # 绿色
-    "done_in_dev": "\033[34m",  # 蓝色
-    "released": "\033[32m",     # 绿色
-    "dropped": "\033[35m",      # 品红
     "blocked": "\033[31m",      # 红色
     "cancelled": "\033[35m",    # 紫色/品红
     "reset": "\033[0m",
@@ -54,7 +45,7 @@ _ANSI_COLORS = {
 # phase 标准显示顺序
 _PHASE_DISPLAY_ORDER = [
     "DESIGN", "FAST_TRACK", "DESIGN_IMPLEMENT",
-    "VERIFY", "FIX", "MERGE_FIX", "MERGE", "RELEASE_PREP", "RELEASE", "CI_FIX", "FINALIZE",
+    "VERIFY", "FIX", "MERGE_FIX", "FINALIZE", "MERGE",
 ]
 
 
@@ -222,9 +213,6 @@ def _build_summary(queue: list[dict]) -> dict:
         "pending": by_status.get("pending", 0),
         "in_progress": by_status.get("in_progress", 0),
         "done": by_status.get("done", 0),
-        "done_in_dev": by_status.get("done_in_dev", 0),
-        "released": by_status.get("released", 0),
-        "dropped": by_status.get("dropped", 0),
         "blocked": by_status.get("blocked", 0),
         "cancelled": by_status.get("cancelled", 0),
     }
@@ -279,13 +267,10 @@ def _render_text(
     lines.append("openNiuMa 状态概览")
     lines.append("=" * 70)
 
-    branch = data.get("batch_branch") or data.get("dev_branch")
-    batch_status = data.get("batch_status")
+    branch = data.get("dev_branch")
     phase = data.get("current_phase")
     if branch:
-        lines.append(f"批次: {branch}")
-    if batch_status:
-        lines.append(f"批次状态: {batch_status}")
+        lines.append(f"分支: {branch}")
     if phase:
         lines.append(f"阶段: {phase}")
     lines.append("")
@@ -294,13 +279,8 @@ def _render_text(
         f"总计: {summary['total']}",
         f"待处理: {summary['pending']}",
         f"进行中: {summary['in_progress']}",
-        f"已进 Dev: {summary['done_in_dev']}",
-        f"已发布: {summary['released']}",
+        f"完成: {summary['done']}",
     ]
-    if summary["dropped"]:
-        parts.append(f"已移除: {summary['dropped']}")
-    if summary["done"]:
-        parts.append(f"旧完成态: {summary['done']}")
     if summary["blocked"]:
         parts.append(f"阻塞: {summary['blocked']}")
     if summary["cancelled"]:
@@ -329,7 +309,7 @@ def _render_text(
                 if cur_phase:
                     time_str += f" [{cur_phase}]"
                 label += time_str
-            elif status in ("done", "done_in_dev", "released", "dropped", "cancelled"):
+            elif status in ("done", "cancelled"):
                 total = _get_total_sec(tid, phase_timings)
                 if total:
                     label += f" {_fmt_duration(total)}"
@@ -362,9 +342,9 @@ def _render_dashboard(
     lines.append(f"{c['bold']}╚══════════════════════════════════════╝{c['reset']}")
     lines.append("")
 
-    # 进度条（计 released + done_in_dev + done，不计 cancelled）
+    # 进度条（只计 done，不计 cancelled）
     total = summary["total"]
-    done = summary["released"] + summary["done_in_dev"] + summary["done"]
+    done = summary.get("released", 0) + summary.get("done_in_dev", 0) + summary["done"]
     if total > 0:
         pct = done * 100 // total
         bar_len = 30
@@ -379,13 +359,8 @@ def _render_dashboard(
     stat_parts = [
         f"{c['pending']}○ 待处理: {summary['pending']}{c['reset']}",
         f"{c['in_progress']}● 进行中: {summary['in_progress']}{c['reset']}",
-        f"{c['done_in_dev']}↺ 已进 Dev: {summary['done_in_dev']}{c['reset']}",
-        f"{c['released']}★ 已发布: {summary['released']}{c['reset']}",
+        f"{c['done']}✓ 完成: {summary['done']}{c['reset']}",
     ]
-    if summary["dropped"]:
-        stat_parts.append(f"{c['dropped']}↧ 已移除: {summary['dropped']}{c['reset']}")
-    if summary["done"]:
-        stat_parts.append(f"{c['done']}✓ 旧完成态: {summary['done']}{c['reset']}")
     if summary["blocked"]:
         stat_parts.append(f"{c['blocked']}⊘ 阻塞: {summary['blocked']}{c['reset']}")
     if summary["cancelled"]:
@@ -426,7 +401,7 @@ def _render_dashboard(
                         f"      {c['dim']}{ph_name:<22} {_fmt_duration(ph_dur)} ✓{c['reset']}"
                     )
 
-        elif status in ("done", "done_in_dev", "released", "dropped", "cancelled"):
+        elif status in ("done", "cancelled"):
             total_sec = _get_total_sec(tid, phase_timings)
             time_str = f"  {_fmt_duration(total_sec)}" if total_sec else ""
             lines.append(

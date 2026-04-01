@@ -40,9 +40,6 @@ from widgets.log_viewer import LogViewerPanel  # noqa: E402
 STATUS_ICONS = {
     "pending": ("○", "yellow"),
     "in_progress": ("●", "cyan"),
-    "done_in_dev": ("↺", "blue"),
-    "released": ("★", "green"),
-    "dropped": ("↧", "magenta"),
     "done": ("✓", "green"),
     "blocked": ("✗", "red"),
 }
@@ -62,7 +59,7 @@ def _build_header_stats(queue: list[dict]) -> str:
 
 def _build_progress(queue: list[dict]) -> str:
     total = len(queue)
-    done = sum(1 for t in queue if t.get("status") in {"done", "done_in_dev", "released"})
+    done = sum(1 for t in queue if t.get("status") == "done")
     if total == 0:
         return "无任务"
     pct = done * 100 // total

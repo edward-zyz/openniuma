@@ -25,28 +25,8 @@ _DEFAULT_STATE: dict = {
     "completed": [],
     "blocked": [],
     "dev_branch": None,
-    "batch_branch": None,
-    "batch_status": "active",
-    "release_pr_number": None,
-    "release_started_at": None,
     "current_phase": None,
 }
-
-_TERMINAL_TASK_STATUSES = {"done", "done_in_dev", "released", "dropped"}
-_TERMINAL_WORKER_PHASES = {"AWAITING_HUMAN_REVIEW", "FINALIZE"}
-
-
-def is_worker_state_done(worker_state: dict, task_id: int) -> bool:
-    """判断 worker state 是否已将指定任务推进到完成态。"""
-    for task in worker_state.get("queue", []):
-        if task.get("id") == task_id:
-            return task.get("status") in _TERMINAL_TASK_STATUSES
-
-    completed_ids = {item.get("id") for item in worker_state.get("completed", [])}
-    if task_id in completed_ids:
-        return True
-
-    return worker_state.get("current_phase") in _TERMINAL_WORKER_PHASES
 
 
 class LoopState:
@@ -68,11 +48,6 @@ class LoopState:
                     data[key] = list(default)  # 深拷贝列表
                 else:
                     data[key] = default
-        if not data.get("batch_branch") and data.get("dev_branch"):
-            data["batch_branch"] = data["dev_branch"]
-        for task in data.get("queue", []):
-            if task.get("status") == "completed":
-                task["status"] = "done_in_dev"
         return data
 
     # ── 读取 ───────────────────────────────────────────
@@ -160,12 +135,12 @@ class LoopState:
         return result["ok"]
 
     def complete_task(self, task_id: int) -> None:
-        """将任务标记为 done_in_dev 并记录完成时间。"""
+        """将任务标记为 done 并记录完成时间。"""
 
         def _complete(data: dict) -> dict:
             for task in data.get("queue", []):
                 if task.get("id") == task_id:
-                    task["status"] = "done_in_dev"
+                    task["status"] = "done"
                     task["completed_at"] = _now_iso()
                     task["_version"] = task.get("_version", 1) + 1
                     task["_updated_at"] = time.time()
@@ -208,11 +183,10 @@ class LoopState:
         return result["ok"]
 
     def find_ready_tasks(self) -> list[dict]:
-        """返回所有 pending 且依赖已全部满足的任务。"""
+        """返回所有 pending 且依赖已全部 done 的任务。"""
         data = self._store.read()
         queue = data.get("queue", [])
-        ready_statuses = {"done", "done_in_dev", "released", "cancelled"}
-        done_ids = {t["id"] for t in queue if t.get("status") in ready_statuses}
+        done_ids = {t["id"] for t in queue if t.get("status") in {"done", "done_in_dev", "released", "cancelled"}}
 
         ready = []
         for task in queue:
