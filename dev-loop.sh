@@ -1342,15 +1342,15 @@ while true; do
   phase=$(read_phase)
   log "当前 Phase: $phase"
 
-  # 守卫：single-task worker 不应进入 INIT phase
-  if [ -n "$SINGLE_TASK" ] && [ "$phase" = "INIT" ]; then
-    log "⚠️ Worker 不应进入 INIT phase，重置为 DESIGN_IMPLEMENT"
-    python3 -c "
-import sys; sys.path.insert(0, '$NIUMA_DIR')
-from lib.json_store import JsonFileStore
-JsonFileStore('$STATE_FILE').update(lambda s: dict(s, current_phase='DESIGN_IMPLEMENT'))
-"
-    phase="DESIGN_IMPLEMENT"
+  # 守卫：single-task worker 不应进入 INIT 或无效 phase（如 DONE）
+  if [ -n "$SINGLE_TASK" ]; then
+    case "$phase" in
+      INIT|DONE|RELEASE_PREP|RELEASE)
+        log "⚠️ Worker 遇到无效 phase '$phase'，标记任务完成并退出"
+        sync_worker_result "$SINGLE_TASK" 0
+        break
+        ;;
+    esac
   fi
 
   # Bug#1 fix: 每轮循环开始时重置 worktree 路径，避免 VERIFY 检查误用上一轮的旧路径
