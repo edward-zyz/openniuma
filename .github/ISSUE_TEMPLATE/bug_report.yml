@@ -1,0 +1,53 @@
+name: Bug Report
+description: 报告一个 bug
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: openNiuMa 版本
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: claude-version
+    attributes:
+      label: Claude Code 版本
+      placeholder: "v1.x"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: "macOS 15.3 / Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: workflow-yaml
+    attributes:
+      label: workflow.yaml（脱敏后）
+      render: yaml
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 运行 `openniuma add "..."`
+        2. 运行 `openniuma start`
+        3. 观察到...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为 vs 实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 从 `.openniuma-runtime/logs/` 中粘贴相关日志
+      render: text

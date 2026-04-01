@@ -1,0 +1,17 @@
+# openNiuMa workflow configuration
+# 文档: https://github.com/edward-zyz/openniuma/blob/main/docs/configuration.md
+schema_version: 1
+
+project:
+  name: "{{ project_name }}"
+  main_branch: {{ main_branch }}
+  gate_command: |
+    {{ gate_command | indent(4) }}
+  spec_dir: "{{ spec_dir | default('docs/specs') }}"
+  plan_dir: "{{ plan_dir | default('docs/plans') }}"
+
+workers:
+  max_concurrent: {{ max_workers | default(3) }}
+
+models:
+  default: opus

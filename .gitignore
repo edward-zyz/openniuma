@@ -1,24 +1,36 @@
-# Python 运行时
+# Python
 __pycache__/
 *.py[cod]
-*.pyc
-.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
 
-# 状态文件（各机器独立）
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Runtime (user's project)
+.openniuma-runtime/
+.trees/
+
+# Mypy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
 state.json
 state.json.lock
 stats.json
 stats.json.lock
-stats-archive-*.json
-
-# 运行时生成
 .cache/
-.env
-logs/
-inbox/
-tasks/
-backlog.md
-drafts/
-reviews/
-workers/
-dev-loop-observations.md
