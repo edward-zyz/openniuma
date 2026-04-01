@@ -1308,8 +1308,10 @@ current_wt_slug=""   # 当前 worktree 对应的 slug
 log "🚀 自治研发循环启动（worktree 隔离模式）"
 log "主仓库: $MAIN_REPO_DIR"
 
-# 启动时清理残留 worktree
-cleanup_stale_worktrees
+# 启动时清理残留 worktree（仅 orchestrator/串行模式，单任务 worker 不执行清理，避免误删其他 worker 的 worktree）
+if [ -z "$SINGLE_TASK" ]; then
+  cleanup_stale_worktrees
+fi
 
 while true; do
   # 从 workflow.yaml 加载配置到 shell 变量
@@ -1326,6 +1328,20 @@ while true; do
 
   phase=$(read_phase)
   log "当前 Phase: $phase"
+
+  # 守卫：single-task worker 不应进入 INIT phase（INIT 是 orchestrator 级操作）
+  # 如果 Claude 误写了 INIT，重置为 DESIGN_IMPLEMENT 防止 worker 执行全局初始化
+  if [ -n "$SINGLE_TASK" ] && [ "$phase" = "INIT" ]; then
+    log "⚠️ Worker 不应进入 INIT phase，重置为 DESIGN_IMPLEMENT"
+    python3 -c "
+import sys
+sys.path.insert(0, '$NIUMA_DIR')
+from lib.json_store import JsonFileStore
+store = JsonFileStore('$STATE_FILE')
+store.update(lambda s: dict(s, current_phase='DESIGN_IMPLEMENT'))
+"
+    phase="DESIGN_IMPLEMENT"
+  fi
 
   if [ -n "$SINGLE_TASK" ] && worker_task_done; then
     log "Worker #${SINGLE_TASK} 已在 state 中完成，退出"
