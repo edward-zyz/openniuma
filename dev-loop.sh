@@ -41,19 +41,20 @@ for arg in "$@"; do
 done
 
 # ── 配置 ──
-NIUMA_DIR="$(cd "$(dirname "$0")" && pwd)"          # openniuma 目录绝对路径
+NIUMA_DIR="$(cd "$(dirname "$0")" && pwd)"          # openniuma 代码目录绝对路径
 MAIN_REPO_DIR="$(dirname "$NIUMA_DIR")"             # 主仓库绝对路径
-STATE_FILE="${NIUMA_DIR}/state.json"                 # 全部自包含在 openniuma/ 下
-INBOX_DIR="${NIUMA_DIR}/inbox"
-TASKS_DIR="${NIUMA_DIR}/tasks"
-BACKLOG_FILE="${NIUMA_DIR}/backlog.md"
-LOG_DIR="${NIUMA_DIR}/logs"
-STATS_FILE="${NIUMA_DIR}/stats.json"
+RUNTIME_DIR="${MAIN_REPO_DIR}/.openniuma-runtime"    # 运行时数据目录
+STATE_FILE="${RUNTIME_DIR}/state.json"
+INBOX_DIR="${RUNTIME_DIR}/inbox"
+TASKS_DIR="${RUNTIME_DIR}/tasks"
+BACKLOG_FILE="${RUNTIME_DIR}/backlog.md"
+LOG_DIR="${RUNTIME_DIR}/logs"
+STATS_FILE="${RUNTIME_DIR}/stats.json"
 WORKTREE_PREFIX="loop"                              # worktree 目录前缀
 WORKTREE_BASE_DIR="${MAIN_REPO_DIR}/.trees"         # worktree 父目录
 INBOX_POLL_INTERVAL=60
 MAX_CONSECUTIVE_FAILURES=3
-WORKERS_DIR="${NIUMA_DIR}/workers"
+WORKERS_DIR="${RUNTIME_DIR}/workers"
 MAIN_REPO_ORIGINAL_BRANCH=$(git -C "$MAIN_REPO_DIR" branch --show-current 2>/dev/null || echo "")
 
 # ── 辅助函数 ──
@@ -229,11 +230,25 @@ ensure_worktree() {
   fi
 
   # 创建 worktree：用 detached HEAD 基于 dev 分支（避免多 worktree 检出同一分支的冲突）
-  git -C "$MAIN_REPO_DIR" worktree add --detach "$wt_path" "$dev_branch" >/dev/null 2>&1 || {
-    log "❌ git worktree add 失败" >&3
+  # 并发创建 worktree 时可能因 git lock 竞争失败，最多重试 3 次
+  local wt_created=false
+  for attempt in 1 2 3; do
+    if git -C "$MAIN_REPO_DIR" worktree add --detach "$wt_path" "$dev_branch" >/dev/null 2>&1; then
+      wt_created=true
+      break
+    fi
+    if [ -d "$wt_path/.git" ] || [ -f "$wt_path/.git" ]; then
+      wt_created=true
+      break
+    fi
+    log "⚠️ git worktree add 失败，第 ${attempt}/3 次重试..." >&3
+    sleep "$((attempt * 2))"
+  done
+  if [ "$wt_created" = false ]; then
+    log "❌ git worktree add 3 次重试均失败" >&3
     exec 3>&-
     return 1
-  }
+  fi
 
   # 执行 after_create hook（替代硬编码的项目初始化）
   local hook
@@ -275,13 +290,19 @@ cleanup_worktree() {
 
 # 启动时清理残留的 loop worktree（上次异常退出后的残留）
 cleanup_stale_worktrees() {
-  # 收集所有活跃 worker 正在使用的 worktree slug（避免误删并行 worker 的目录）
+  # 收集有活跃进程的 worker 正在使用的 worktree slug（避免误删正在运行的 worker 的目录）
+  # 只有 pid 文件存在且进程存活的 worker 才视为活跃，已完成/已死的 worker 不保护其 worktree
   local active_slugs=""
   for wstate in "${WORKERS_DIR}"/*/state.json; do
     [ -f "$wstate" ] || continue
+    local wdir
+    wdir="$(dirname "$wstate")"
+    local pidfile="${wdir}/pid"
+    if [ ! -f "$pidfile" ]; then continue; fi
+    local wpid
+    wpid=$(cat "$pidfile" 2>/dev/null)
+    if ! kill -0 "$wpid" 2>/dev/null; then continue; fi
     local slug
-    # Bug fix: 使用 current_item_id + desc_path 提取 slug，与 read_slug() 逻辑一致
-    # 原来用 queue[0].name 会取到已完成任务的名称，导致当前活跃 worktree 不在保护名单里被误删
     slug=$(python3 -c "
 import json, re, sys
 try:
@@ -511,8 +532,8 @@ PYEOF
   log "📝 backlog.md 已重新生成"
 
   # commit tasks/ 和 backlog.md 的变更
-  if [ -n "$(git -C "$MAIN_REPO_DIR" status --porcelain openniuma/tasks/ openniuma/backlog.md 2>/dev/null)" ]; then
-    git -C "$MAIN_REPO_DIR" add openniuma/tasks/ openniuma/backlog.md
+  if [ -n "$(git -C "$MAIN_REPO_DIR" status --porcelain .openniuma-runtime/tasks/ .openniuma-runtime/backlog.md 2>/dev/null)" ]; then
+    git -C "$MAIN_REPO_DIR" add .openniuma-runtime/tasks/ .openniuma-runtime/backlog.md
     git -C "$MAIN_REPO_DIR" commit -m "docs: inbox 新任务入队"
     log "📥 tasks/ + backlog.md 已 commit"
   fi
@@ -641,7 +662,7 @@ for f in task_files:
         "created_at": created_at,
         "completed_at": None,
         "spec_path": None,
-        "desc_path": f"openniuma/tasks/{f.name}",
+        "desc_path": f"{tasks_dir}/{f.name}",
     }
     queue.append(item)
     if is_done:
@@ -1106,8 +1127,8 @@ for q in ws.get('queue', []):
 
     # 刷新 backlog
     refresh_backlog
-    if [ -n "$(git -C "$MAIN_REPO_DIR" status --porcelain openniuma/backlog.md 2>/dev/null)" ]; then
-      git -C "$MAIN_REPO_DIR" add openniuma/backlog.md
+    if [ -n "$(git -C "$MAIN_REPO_DIR" status --porcelain .openniuma-runtime/backlog.md 2>/dev/null)" ]; then
+      git -C "$MAIN_REPO_DIR" add .openniuma-runtime/backlog.md
       git -C "$MAIN_REPO_DIR" commit -m "docs: 刷新 backlog.md" 2>/dev/null || true
     fi
 
@@ -1135,6 +1156,26 @@ def _reset_orphans(state):
 
 store.update(_reset_orphans)
 " 2>/dev/null
+
+    # 清理已完成任务的残留 worker 目录
+    for wdir in "${WORKERS_DIR}"/*/; do
+      [ -d "$wdir" ] || continue
+      local wtid
+      wtid=$(basename "$wdir")
+      [ -f "${wdir}pid" ] && kill -0 "$(cat "${wdir}pid" 2>/dev/null)" 2>/dev/null && continue
+      local task_status
+      task_status=$(python3 -c "
+import json
+for q in json.load(open('$STATE_FILE')).get('queue', []):
+    if q['id'] == $wtid:
+        print(q.get('status', ''))
+        break
+" 2>/dev/null)
+      if [ "$task_status" = "done" ] || [ "$task_status" = "done_in_dev" ] || [ "$task_status" = "released" ] || [ "$task_status" = "cancelled" ] || [ "$task_status" = "dropped" ]; then
+        rm -rf "$wdir"
+        log "🧹 清理已完成任务 #${wtid} 的 worker 目录"
+      fi
+    done
 
     # 统计当前活跃 worker 数
     active_count=0
@@ -1471,9 +1512,9 @@ store.update(_set_wt)
       # 在 prompt 前注入 worktree 上下文
       worktree_hint="⚠️ 你在 git worktree 中工作（隔离模式）。
 - 代码修改和 git 操作在当前目录执行: ${current_wt_path}
-- state.json 在 openniuma/ 目录，必须使用绝对路径读写: ${STATE_FILE}
-- task 描述文件在 openniuma/tasks/: ${TASKS_DIR}/
-- 禁止在 worktree 中创建或修改 openniuma/ 目录下的状态文件
+- state.json 在 .openniuma-runtime/ 目录，必须使用绝对路径读写: ${STATE_FILE}
+- task 描述文件在 .openniuma-runtime/tasks/: ${TASKS_DIR}/
+- 禁止在 worktree 中创建或修改 .openniuma-runtime/ 目录下的状态文件
 "
       prompt="${worktree_hint}
 
@@ -1710,8 +1751,8 @@ store.update(lambda s: dict(s, current_phase='AWAITING_HUMAN_REVIEW'))
 
   # 每轮会话结束后刷新 backlog.md（反映 state.json 的最新状态）
   refresh_backlog
-  if [ -n "$(git -C "$MAIN_REPO_DIR" status --porcelain openniuma/backlog.md 2>/dev/null)" ]; then
-    git -C "$MAIN_REPO_DIR" add openniuma/backlog.md
+  if [ -n "$(git -C "$MAIN_REPO_DIR" status --porcelain .openniuma-runtime/backlog.md 2>/dev/null)" ]; then
+    git -C "$MAIN_REPO_DIR" add .openniuma-runtime/backlog.md
     git -C "$MAIN_REPO_DIR" commit -m "docs: 刷新 backlog.md"
     log "📝 backlog.md 已刷新并 commit"
   fi

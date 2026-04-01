@@ -362,9 +362,9 @@ def _render_dashboard(
     lines.append(f"{c['bold']}╚══════════════════════════════════════╝{c['reset']}")
     lines.append("")
 
-    # 进度条（只计 done，不计 cancelled）
+    # 进度条（计 released + done_in_dev + done，不计 cancelled）
     total = summary["total"]
-    done = summary["released"] or summary["done_in_dev"] or summary["done"]
+    done = summary["released"] + summary["done_in_dev"] + summary["done"]
     if total > 0:
         pct = done * 100 // total
         bar_len = 30

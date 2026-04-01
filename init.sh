@@ -3,6 +3,7 @@ set -euo pipefail
 export PATH="/opt/homebrew/bin:/opt/homebrew/sbin:${PATH}"
 NIUMA_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(dirname "$NIUMA_DIR")"
+RUNTIME_DIR="${REPO_DIR}/.openniuma-runtime"
 
 USE_AI=true
 DRY_RUN=false
@@ -19,7 +20,10 @@ echo "🚀 初始化 openNiuMa..."
 python3 "$NIUMA_DIR/lib/compat.py" check-python
 
 # 1. 创建目录
-mkdir -p openniuma/inbox openniuma/tasks openniuma/logs openniuma/reviews openniuma/prompts openniuma/.cache
+# 代码目录
+mkdir -p openniuma/prompts openniuma/.cache
+# 运行时目录
+mkdir -p "$RUNTIME_DIR"/{inbox,tasks,logs,reviews,workers,drafts}
 
 # 2. 探测
 echo "🔍 探测项目配置..."
@@ -79,10 +83,7 @@ else
 fi
 
 # 6. .gitignore
-for pattern in "openniuma/state.json" "openniuma/state.json.lock" "openniuma/stats.json" \
-               "openniuma/stats-archive-*.json" "openniuma/.env" "openniuma/.cache/" \
-               "openniuma/logs/" "openniuma/workers/" "openniuma/inbox/" \
-               "openniuma/backlog.md" ".trees/"; do
+for pattern in ".openniuma-runtime/" "openniuma/.cache/" "openniuma/.env" ".trees/"; do
   grep -qF "$pattern" .gitignore 2>/dev/null || echo "$pattern" >> .gitignore
 done
 echo "  ✅ .gitignore 已更新"

@@ -211,7 +211,7 @@ class LoopState:
         """返回所有 pending 且依赖已全部满足的任务。"""
         data = self._store.read()
         queue = data.get("queue", [])
-        ready_statuses = {"done", "done_in_dev", "released"}
+        ready_statuses = {"done", "done_in_dev", "released", "cancelled"}
         done_ids = {t["id"] for t in queue if t.get("status") in ready_statuses}
 
         ready = []

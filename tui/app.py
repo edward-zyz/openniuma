@@ -9,6 +9,7 @@ from pathlib import Path
 
 # 依赖自检
 NIUMA_DIR = str(Path(__file__).resolve().parent.parent)
+RUNTIME_DIR = str(Path(NIUMA_DIR).parent / ".openniuma-runtime")
 sys.path.insert(0, os.path.join(NIUMA_DIR, "lib"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -258,7 +259,7 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(description="openNiuMa Dashboard TUI")
-    parser.add_argument("--dir", default=NIUMA_DIR, help="openniuma 目录路径")
+    parser.add_argument("--dir", default=RUNTIME_DIR, help="openniuma 运行时数据目录路径")
     args = parser.parse_args()
 
     app = DashboardApp(niuma_dir=args.dir)

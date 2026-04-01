@@ -108,10 +108,11 @@ class StatsStore:
             tasks = [t for t in tasks if t.get("task_id") == task_id]
 
         total_duration = sum(s.get("duration_sec", 0) for s in sessions)
+        distinct_tasks = len({s.get("task_id") for s in sessions if s.get("task_id") is not None})
         return {
             "total_sessions": len(sessions),
             "total_duration_sec": total_duration,
-            "total_tasks": len(tasks),
+            "total_tasks": distinct_tasks or len(tasks),
         }
 
     def get_all(self) -> dict:

@@ -131,7 +131,12 @@ def detect_resume_signals(inbox_dir: str) -> list[int]:
 
 
 def reclaim_orphan_tasks(state: LoopState, workers_dir: str) -> None:
-    """回收孤儿任务：in_progress 但进程已不存在的任务重置为 pending。"""
+    """回收孤儿任务：in_progress 但进程已不存在的任务重置为 pending。
+
+    先检查 worker state：如果 worker 已将任务推进到完成态，即使进程死了也不回收，
+    而是由 sync_worker_result 处理。避免已完成任务被误重置为 pending。
+    """
+    import json as _json
     data = state.get_all()
     queue = data.get("queue", [])
 
@@ -141,12 +146,24 @@ def reclaim_orphan_tasks(state: LoopState, workers_dir: str) -> None:
 
         task_id = task.get("id")
         version = task.get("_version", 1)
-        pid_path = os.path.join(workers_dir, str(task_id), "pid")
+        worker_dir = os.path.join(workers_dir, str(task_id))
+        pid_path = os.path.join(worker_dir, "pid")
 
         pid = _read_pid_file(pid_path)
 
-        # 无 pid 文件或进程已死 → 孤儿
+        # 无 pid 文件或进程已死 → 可能是孤儿
         if pid is None or not _pid_is_alive(pid):
+            # 检查 worker state：如果任务已完成，跳过回收（让 sync 处理）
+            worker_state_path = os.path.join(worker_dir, "state.json")
+            if os.path.isfile(worker_state_path):
+                try:
+                    with open(worker_state_path) as f:
+                        ws = _json.load(f)
+                    from state import is_worker_state_done
+                    if is_worker_state_done(ws, task_id):
+                        continue
+                except Exception:
+                    pass
             state.reclaim_orphan(task_id, version)
 
 
