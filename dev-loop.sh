@@ -1568,17 +1568,9 @@ store.update(_inc)
     fi
   fi
   claude_exit=$?
-  set -e
 
-  # 🔒 分支守卫：session 结束后立即检查并重置主仓库分支，防止 FINALIZE/CI_FIX 污染
-  _guard_dev_branch=$(read_field dev_branch 2>/dev/null || echo "")
-  _guard_main_branch=$(git -C "$MAIN_REPO_DIR" branch --show-current 2>/dev/null || echo "")
-  if [ -n "$_guard_dev_branch" ] && [ -n "$_guard_main_branch" ] && [ "$_guard_main_branch" != "$_guard_dev_branch" ]; then
-    log "⚠️ [分支守卫] 主仓库分支被污染（$_guard_main_branch → $_guard_dev_branch），自动重置"
-    git -C "$MAIN_REPO_DIR" checkout "$_guard_dev_branch" 2>/dev/null || log "❌ [分支守卫] 重置失败，请人工介入"
-  fi
-
-  # 记录会话耗时
+  # === session 记录（最高优先级，不受 set -e 影响） ===
+  # 必须在分支守卫和其他后处理之前执行，防止任何错误导致统计丢失
   session_end=$(date +%s)
   session_end_iso=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)
   session_duration=$(( session_end - session_start ))
@@ -1608,6 +1600,16 @@ else:
 " 2>/dev/null || echo "")
   echo "{\"task_id\":${current_id:-0},\"task_name\":\"${task_name}\",\"phase\":\"${phase}\",\"started_at\":\"${session_start_iso}\",\"ended_at\":\"${session_end_iso}\",\"duration_sec\":${session_duration},\"exit_code\":${claude_exit},\"attempt\":${consecutive_failures},\"failure_type\":$([ -n "${failure_type}" ] && echo "\"$failure_type\"" || echo "null")}" | \
     python3 "$NIUMA_DIR/lib/stats.py" record-session "$STATS_FILE" 2>/dev/null || true
+
+  set -e
+
+  # 🔒 分支守卫：session 结束后检查并重置主仓库分支，防止 FINALIZE/CI_FIX 污染
+  _guard_dev_branch=$(read_field dev_branch 2>/dev/null || echo "")
+  _guard_main_branch=$(git -C "$MAIN_REPO_DIR" branch --show-current 2>/dev/null || echo "")
+  if [ -n "$_guard_dev_branch" ] && [ -n "$_guard_main_branch" ] && [ "$_guard_main_branch" != "$_guard_dev_branch" ]; then
+    log "⚠️ [分支守卫] 主仓库分支被污染（$_guard_main_branch → $_guard_dev_branch），自动重置"
+    git -C "$MAIN_REPO_DIR" checkout "$_guard_dev_branch" 2>/dev/null || log "❌ [分支守卫] 重置失败，请人工介入"
+  fi
 
   # 检测 API 限流（日志中含 "hit your limit" 或 "rate limit"）
   rate_limited=false

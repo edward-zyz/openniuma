@@ -69,9 +69,37 @@ worker-42.log: ❌ 连续 3 次 Phase 未推进，停止循环
 
 ### OPT-03: Python "Bad file descriptor" 错误 [观察]
 
-**位置:** worker-42.log（10 次）
-**严重性:** 低
+**位置:** worker-42.log（10 次）  **严重性:** 低
 
-`Fatal Python error: init_sys_streams: can't initialize sys standard streams / OSError: [Errno 9] Bad file descriptor`
+## 第四轮：2026-04-02 日志分析
 
-原因是 `exec 3>&-` 关闭 fd3 后影响了子进程的 fd 继承。仅在 worktree 创建重试多次时出现，不影响核心功能。
+### BUG-11: status.py 缺少 done_in_dev/released/dropped 状态图标 [已修复]
+
+**文件:** `lib/status.py`  **严重性:** 中
+
+重构时删除了 `done_in_dev`、`released`、`dropped` 的图标/标签/颜色/统计。
+这些状态显示为 `?`，统计行缺少已进 Dev/已发布计数。
+
+### BUG-12: Worker phase=DONE 导致无限重启循环 [已修复]
+
+**文件:** `dev-loop.sh`  **严重性:** 高
+
+Claude 误写 `current_phase="DONE"`（无效 phase），worker 不断被 orchestrator 重启。
+修复：遇到 INIT/DONE/RELEASE_PREP/RELEASE 等无效 phase 时，sync 结果并退出。
+
+### BUG-13: set -e 导致 session 统计丢失（13 个任务无记录） [已修复]
+
+**文件:** `dev-loop.sh:1571`  **严重性:** 高
+
+**根因:** `set -e` 在 Claude session 结束后立即恢复（行 1571），分支守卫代码（1573-1578）
+中的任何错误（如历史编码问题导致的 `unbound variable`）会让脚本立即退出，
+跳过后续的 session 记录代码（1581-1610）。
+
+**影响:** 任务 #45-#57（13 个）全部没有 session 统计记录，worker 日志确认：
+```
+worker-47.log: _guard_dev_branch\xef: unbound variable  ← 每次 session 后崩溃
+```
+每个 worker 在每轮 session 后都因此错误退出，由 orchestrator 重启后继续，但统计全丢。
+
+**修复:** 将 session 记录（计时 + 失败分类 + stats 写入）移到 `set -e` 恢复之前执行，
+确保统计记录不受后续代码错误影响。
