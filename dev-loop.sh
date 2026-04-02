@@ -1304,8 +1304,8 @@ cleanup_on_exit() {
   _exit_dev_branch=$(python3 "$NIUMA_DIR/lib/state.py" get-field "$STATE_FILE" dev_branch 2>/dev/null || echo "")
   _exit_current_branch=$(git -C "$MAIN_REPO_DIR" branch --show-current 2>/dev/null || echo "")
   if [ -n "$_exit_dev_branch" ] && [ -n "$_exit_current_branch" ] && [ "$_exit_current_branch" != "$_exit_dev_branch" ]; then
-    log "⚠️ [分支守卫] 主仓库分支被污染（$_exit_current_branch → $_exit_dev_branch），自动重置"
-    git -C "$MAIN_REPO_DIR" checkout "$_exit_dev_branch" 2>/dev/null || log "❌ [分支守卫] 重置失败，请人工介入"
+    log "⚠️ [分支守卫] 主仓库分支被污染 (${_exit_current_branch} -> ${_exit_dev_branch}), 自动重置"
+    git -C "$MAIN_REPO_DIR" checkout "${_exit_dev_branch}" 2>/dev/null || log "❌ [分支守卫] 重置失败, 请人工介入"
   fi
   kill 0 2>/dev/null
   exit 0
@@ -1607,8 +1607,8 @@ else:
   _guard_dev_branch=$(read_field dev_branch 2>/dev/null || echo "")
   _guard_main_branch=$(git -C "$MAIN_REPO_DIR" branch --show-current 2>/dev/null || echo "")
   if [ -n "$_guard_dev_branch" ] && [ -n "$_guard_main_branch" ] && [ "$_guard_main_branch" != "$_guard_dev_branch" ]; then
-    log "⚠️ [分支守卫] 主仓库分支被污染（$_guard_main_branch → $_guard_dev_branch），自动重置"
-    git -C "$MAIN_REPO_DIR" checkout "$_guard_dev_branch" 2>/dev/null || log "❌ [分支守卫] 重置失败，请人工介入"
+    log "⚠️ [分支守卫] 主仓库分支被污染 (${_guard_main_branch} -> ${_guard_dev_branch}), 自动重置"
+    git -C "$MAIN_REPO_DIR" checkout "${_guard_dev_branch}" 2>/dev/null || log "❌ [分支守卫] 重置失败, 请人工介入"
   fi
 
   # 检测 API 限流（日志中含 "hit your limit" 或 "rate limit"）
